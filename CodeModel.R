@@ -8,7 +8,7 @@ if(length(setdiff(pkgs,rownames(installed.packages())))>0) { install.packages(se
 invisible(lapply(pkgs,library,character.only=T)) ## install and load 
 if(exists("mainDir")) { } else { mainDir<-setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) } ## set home/main directory
 is.even<-function(x) { x %% 2 == 0 }
-"%wo%"<-function(x,y) x[!x %in% y] 
+'%!in%'<-function(x,y)!('%in%'(x,y))
 
 ##=================================================================## data
 data<-read.csv("DataModel.csv")[,-1]
@@ -89,45 +89,10 @@ mod_final<-sel_mod<-formula(paste("lnRS~",addterms,sep=""))
 anova_results<-data.frame(anova(mod))
 anova_results$Variable<-rownames(anova_results)
 # write_xlsx(anova_results,"model_ANOVA_table.xlsx")
-
-##============================================## make model selection table
+##------------------------------------------------## model selection table
 num_of_mods<-20 ## top X models
 mod_select_topX<-mod_select[1:num_of_mods,]
 mod_select_topX$cum_weight<-cumsum(mod_select_topX$weight)
-##---------------------------------------------## model forms
-mod_forms<-get.models(mod_select,subset=delta<5)
-mod_forms<-mod_forms[1:num_of_mods]
-mod_forms_topX<-NA
-for(i in 1:num_of_mods) {
-use_mod<-mod_forms[[i]]	
-form<-as.character(use_mod$call)[2]
-mod_forms_topX[i]<-form
-}
-##---------------------------------------------## edit vars in model forms
-mod_forms_topX<-unlist(mod_forms_topX)
-mod_forms_topX<-gsub("lnRS","ln(R/S)",mod_forms_topX)
-mod_forms_topX<-gsub("esc","S",mod_forms_topX)
-mod_forms_topX<-gsub("prel","H",mod_forms_topX)
-mod_forms_topX<-gsub("srel","H",mod_forms_topX)
-mod_forms_topX<-gsub("comp","C",mod_forms_topX)
-mod_forms_topX<-gsub("temp","T",mod_forms_topX)
-mod_forms_topX<-gsub("runs","R",mod_forms_topX)
-mod_forms_topX<-gsub("totr","R",mod_forms_topX)
-mod_forms_topX<-gsub("regime","D",mod_forms_topX)
-mod_forms_topX<-gsub("BL","B",mod_forms_topX)
-mod_forms_topX<-gsub(" ","",mod_forms_topX)
-mod_covars<-mod_forms_topX
-mod_covars<-lapply(mod_covars,function(x) substr(x,1,nchar(x)-10))
-mod_covars<-lapply(mod_covars,function(x) substr(x,9,nchar(x)))
-mod_covars<-unlist(mod_covars)
-##-----------------------------------------------------## add back to table
-mod_select_topX$mod_covars<-mod_covars
-mod_select_topX$mod_forms<-mod_forms_topX
-fn_round<-function(x) { x<-round(x,digits=3) } ## round numeric values
-mod_select_topX<-mod_select_topX %>% mutate_if(is.numeric,fn_round)
-mod_select_topX$delta<-round(mod_select_topX$delta,1)
-mod_selection_table<-mod_select_topX
-# write_xlsx(mod_selection_table,"model_selection_table.xlsx")
 
 ##=======================================================================##
 ##==================================================================## plot
@@ -216,6 +181,69 @@ par(mar=c(4,4,1,1),oma=c(0,0,0.5,0),mgp=c(2.2,0.5,0), cex.axis=1.2,cex.lab=1.3,t
 visreg(mod,xvar="BL",xlab="Broodline",ylab="ln(recruits/spawner)",overlay=T,legend=T,partial=T,alpha=alphap,scale="response", main="", line=list(col=col), fill=list(col=alpha(col,0.25)), points=list(pch=21,bg=col_pt,col=1,lwd=0.2,cex=1.1))
 # dev.off()
 
-###########################################################################
-###########################################################################
-###########################################################################
+##=======================================================================##
+##======================================================## cross-validation
+##=======================================================================##
+## out-of-sample predictions (using train and test data)
+##========================================================## models to test
+mod_select<-dredge(mod,trace=F,rank=rank)
+mod_list<-get.models(mod_select,subset=delta<100) ## sub-models of selected
+##------------------------------------------------------## get model terms
+nM<-length(mod_list)
+test_forms<-list()
+for(i in 1:nM) {
+mymod<-mod_list[[i]]
+terms<-attr(mymod$terms,"term.labels")
+nterms<-length(terms)
+if(nterms!=0) my_mod<-formula("lnRS~1") ## intercept only model
+if(nterms!=0) my_mod<-formula(paste("lnRS~",paste0(terms,collapse="+")))
+test_forms[[i]]<-my_mod
+}
+##-----------------------------------## randomly sample train and test data
+nS<-1e3 ## number of runs
+RMSE<-array(dim=c(nS,nM))
+formulas<-list()
+start<-Sys.time()
+for(i in 1:nS) {
+set.seed(i)
+train<-sort(sample(seq(nY),round(0.75*nY),replace=F)) ## 75%
+test<-seq(nY)[seq(nY) %!in% train]
+traindata<-data[train,] 
+testdata<-data[test,]
+##-------------------------------------------------## loop model structrues
+for(j in 1:nM) { 
+test_mod<-test_forms[[j]]
+trainmod<-lm(test_mod,data=traindata)
+##-----------------------------------------------------------## predictions
+predicted<-predict(trainmod,newdata=list(esc=testdata$esc, BL=testdata$BL,regime=testdata$regime,temp=testdata$temp, srel=testdata$srel,comp=testdata$comp,totr=testdata$totr), se.fit=T,se=T,type="response")
+##-----------------------------------------------## root mean squared error
+pred<-as.numeric(predicted$fit)
+true<-as.numeric(testdata$lnRS)
+RMSE[i,j]<-sqrt(sum((pred-true)^2)/mean(true)) 
+##---------------------------------------------------------## save formulas
+prev_mod<-trainmod
+save_terms<-attr(prev_mod$terms,"term.labels")
+allterms<-paste(save_terms,collapse="+") 
+new_mod<-formula(paste("lnRS~",allterms,sep=""))
+formulas[[j]]<-new_mod
+} ## end loop over models
+} ## end stochastic loop
+end<-Sys.time()
+print(end-start)
+
+##=============================================================## plot RMSE
+# pdf("PWS_wild_pinks_lnRS_vs_covars_RMSE.pdf",height=4,width=6.5)
+par(mar=c(4,4,1,1),mgp=c(2.25,0.5,0),xaxs="i",yaxs="i", cex.axis=1.1,cex.lab=1.2,tcl=-0.3,las=1)
+plot_RMSEs<-apply(RMSE,2,function(x) quantile(x,prob=c(0.5,0.05,0.25,0.75,0.95)))
+nx<-dim(RMSE)[2]
+xvec<-seq(nx)
+plot(NA,NA,xlim=c(-1,nx+2),ylim=c(1,4),xlab="Model #",ylab="RMSE")
+segments(xvec,plot_RMSEs[2,],xvec,plot_RMSEs[5,],lwd=0.5,col="gray10")
+segments(xvec,plot_RMSEs[3,],xvec,plot_RMSEs[4,],lwd=1.5,col="gray10")
+points(xvec,plot_RMSEs[1,],pch=21,cex=0.7,lwd=0.5,bg="white")
+points(1,plot_RMSEs[1,1],pch=21,cex=0.7,lwd=0.5,bg="firebrick")
+# dev.off()
+
+##=======================================================================##
+##=======================================================================##
+##=======================================================================##
