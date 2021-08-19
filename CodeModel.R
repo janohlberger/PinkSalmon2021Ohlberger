@@ -11,7 +11,7 @@ is.even<-function(x) { x %% 2 == 0 }
 '%!in%'<-function(x,y)!('%in%'(x,y))
 
 ##=================================================================## data
-data<-read.csv("DataModel.csv")[,-1]
+data<-read.csv("DataModel.csv")
 ##-----------------------------------------------------## rename for model
 data$esc<-data$Spawners ## brood year (two years prior)
 data$runs<-data$prevYearRunSize ## previous year run size
@@ -28,6 +28,8 @@ data<-dplyr::select(data,Year,BL,lnRS,regime,esc,temp,totr,comp,srel)
 data<-data[complete.cases(data),] ## drop years with NAs
 nY<-dim(data)[1]
 rownames(data)<-seq(1,dim(data)[1],1)
+##------------------------------------------------------------## model data
+# write.csv(data,"DataModel.csv")
 ##-----------------------------------------------------------## for scaling
 data_unscaled<-dplyr::select(data,-Year,-BL,-lnRS,-regime) 
 data_other<-dplyr::select(data,Year,BL,lnRS,regime)
@@ -37,7 +39,7 @@ data_sds<-sapply(data_unscaled,sd)
 data<-data.frame(cbind(data_other,scale(data_unscaled)))
 data_unscaled_all<-data.frame(cbind(data_other,data_unscaled))
 ##----------------------------------------------------------------## notes
-## pCO2 time series shorter, so data and model selection need to be re-run
+## pCO2 time series shorter >> data and model selection need to be re-run
 ## multiple temperature or competitor metrics not to be included together
 
 ##=======================================================================##
@@ -88,17 +90,53 @@ mod_final<-sel_mod<-formula(paste("lnRS~",addterms,sep=""))
 ##---------------------------------------------------## save anova results
 anova_results<-data.frame(anova(mod))
 anova_results$Variable<-rownames(anova_results)
-# write_xlsx(anova_results,"model_ANOVA_table.xlsx")
-##------------------------------------------------## model selection table
+write_xlsx(anova_results,"model_ANOVA_table.xlsx")
+
+##================================================## model selection table
 num_of_mods<-20 ## top X models
 mod_select_topX<-mod_select[1:num_of_mods,]
 mod_select_topX$cum_weight<-cumsum(mod_select_topX$weight)
+##---------------------------------------------## model forms
+mod_forms<-get.models(mod_select,subset=delta<5)
+mod_forms<-mod_forms[1:num_of_mods]
+mod_forms_topX<-NA
+for(i in 1:num_of_mods) {
+  use_mod<-mod_forms[[i]]	
+  form<-as.character(use_mod$call)[2]
+  mod_forms_topX[i]<-form
+}
+##---------------------------------------------## edit vars in model forms
+mod_forms_topX<-unlist(mod_forms_topX)
+mod_forms_topX<-gsub("lnRS","ln(R/S)",mod_forms_topX)
+mod_forms_topX<-gsub("esc","S",mod_forms_topX)
+mod_forms_topX<-gsub("prel","H",mod_forms_topX)
+mod_forms_topX<-gsub("srel","H",mod_forms_topX)
+mod_forms_topX<-gsub("comp","C",mod_forms_topX)
+mod_forms_topX<-gsub("temp","T",mod_forms_topX)
+mod_forms_topX<-gsub("runs","R",mod_forms_topX)
+mod_forms_topX<-gsub("totr","R",mod_forms_topX)
+mod_forms_topX<-gsub("regime","D",mod_forms_topX)
+mod_forms_topX<-gsub("BL","B",mod_forms_topX)
+mod_forms_topX<-gsub(" ","",mod_forms_topX)
+mod_covars<-mod_forms_topX
+# mod_covars<-lapply(mod_covars,function(x) substr(x,1,nchar(x)-2))
+mod_covars<-lapply(mod_covars,function(x) substr(x,1,nchar(x)-10))
+mod_covars<-lapply(mod_covars,function(x) substr(x,9,nchar(x)))
+mod_covars<-unlist(mod_covars)
+##-----------------------------------------------------## add back to table
+mod_select_topX$mod_covars<-mod_covars
+mod_select_topX$mod_forms<-mod_forms_topX
+fn_round<-function(x) { x<-round(x,digits=3) } ## round numeric values
+mod_select_topX<-mod_select_topX %>% mutate_if(is.numeric,fn_round)
+mod_select_topX$delta<-round(mod_select_topX$delta,1)
+mod_selection_table<-mod_select_topX
+write_xlsx(mod_selection_table,"model_selection_table.xlsx")
 
 ##=======================================================================##
 ##==================================================================## plot
 ##=======================================================================##
 alphap<-0.05 ## 90% CIs (alpha: 1-coverage)
-# pdf("PWS_wild_pinks_lnRS_vs_covars_selected.pdf",width=9,height=6.2)
+pdf("PWS_wild_pinks_lnRS_vs_covars_selected.pdf",width=9,height=6.2)
 layout(matrix(c(1:6),nrow=2,byrow=T))
 par(mar=c(4,4,1,1),oma=c(0,0,0.5,0),mgp=c(2.2,0.5,0),cex.axis=1,cex.lab=1.2,tcl=-0.3)
 col<-"gray25";col_pt<-"gray50" ## no interaction plots
@@ -173,13 +211,13 @@ xtrans<-function(x) { x*data_sds[names(data_sds)=="comp"]+data_means[names(data_
 obj_comp<-visreg(mod,xvar="comp",overlay=T,legend=F,partial=T, alpha=alphap,scale="response",main="", xlab="Competitor abundance (millions)",ylim=ylim,ylab=ylab,line=list(col=col), fill=list(col=alpha(col,0.25)), points=list(pch=21,bg=col_pt,col=1,lwd=0.2,cex=cex.pt), xtrans=xtrans)
 legend("topleft","f",text.font=2,cex=cexll,bty="n",inset=ll,xpd=NA)
 ##==================================================================## save
-# dev.off()
+dev.off()
 
 ##================================================## broodline main effect
-# pdf("PWS_wild_pinks_lnRS_vs_covars_selected_BLeffect.pdf",width=4.2,height=4.2)
+pdf("PWS_wild_pinks_lnRS_vs_covars_selected_BLeffect.pdf",width=4.2,height=4.2)
 par(mar=c(4,4,1,1),oma=c(0,0,0.5,0),mgp=c(2.2,0.5,0), cex.axis=1.2,cex.lab=1.3,tcl=-0.3,pch=21)
 visreg(mod,xvar="BL",xlab="Broodline",ylab="ln(recruits/spawner)",overlay=T,legend=T,partial=T,alpha=alphap,scale="response", main="", line=list(col=col), fill=list(col=alpha(col,0.25)), points=list(pch=21,bg=col_pt,col=1,lwd=0.2,cex=1.1))
-# dev.off()
+dev.off()
 
 ##=======================================================================##
 ##======================================================## cross-validation
@@ -232,7 +270,7 @@ end<-Sys.time()
 print(end-start)
 
 ##=============================================================## plot RMSE
-# pdf("PWS_wild_pinks_lnRS_vs_covars_RMSE.pdf",height=4,width=6.5)
+pdf("PWS_wild_pinks_lnRS_vs_covars_RMSE.pdf",height=4,width=6.5)
 par(mar=c(4,4,1,1),mgp=c(2.25,0.5,0),xaxs="i",yaxs="i", cex.axis=1.1,cex.lab=1.2,tcl=-0.3,las=1)
 plot_RMSEs<-apply(RMSE,2,function(x) quantile(x,prob=c(0.5,0.05,0.25,0.75,0.95)))
 nx<-dim(RMSE)[2]
@@ -242,7 +280,7 @@ segments(xvec,plot_RMSEs[2,],xvec,plot_RMSEs[5,],lwd=0.5,col="gray10")
 segments(xvec,plot_RMSEs[3,],xvec,plot_RMSEs[4,],lwd=1.5,col="gray10")
 points(xvec,plot_RMSEs[1,],pch=21,cex=0.7,lwd=0.5,bg="white")
 points(1,plot_RMSEs[1,1],pch=21,cex=0.7,lwd=0.5,bg="firebrick")
-# dev.off()
+dev.off()
 
 ##=======================================================================##
 ##=======================================================================##
